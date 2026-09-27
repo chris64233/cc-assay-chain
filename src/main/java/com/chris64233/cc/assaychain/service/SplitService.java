@@ -44,7 +44,8 @@ public class SplitService {
         BigDecimal declaredLoss = MassRules.requireNonNegativeMass(declaredLossMass, "处理损耗");
 
         SplitEvent existing = splitEventRepository.findByEventNo(eventNo).orElse(null);
-        Sample parent = sampleRepository.findByExternalNo(parentExternalNo)
+        // 悲观锁锁定父样本行，与结果提交/复核/更正/交接串行
+        Sample parent = sampleRepository.findByExternalNoForUpdate(parentExternalNo)
                 .orElseThrow(() -> new NotFoundException("样本不存在: " + parentExternalNo));
 
         if (existing != null) {

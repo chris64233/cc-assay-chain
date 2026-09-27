@@ -2,6 +2,7 @@ package com.chris64233.cc.assaychain;
 
 import com.chris64233.cc.assaychain.api.dto.ChildSampleRequest;
 import com.chris64233.cc.assaychain.domain.AssayEvent;
+import com.chris64233.cc.assaychain.domain.ResultStatus;
 import com.chris64233.cc.assaychain.repo.AssayEventRepository;
 import com.chris64233.cc.assaychain.repo.SampleRepository;
 import com.chris64233.cc.assaychain.service.AssayService;
@@ -49,15 +50,17 @@ class AssayServiceTest {
     }
 
     @Test
-    void onlyCurrentHoldingLabSubmitsResult() {
+    void submittedResultStartsPending() {
         handToLab("AS-01", "EV-AS-01", "中心实验室");
 
         AssayEvent event = assayService.submit(
                 "EV-AS-01", "AS-01", "AU_GRADE", new BigDecimal("2.35"), "g/t", "中心实验室");
 
+        assertThat(event.getStatus()).isEqualTo(ResultStatus.PENDING);
+        assertThat(event.getVersionNo()).isEqualTo(1);
         assertThat(event.getResultValue().scale()).isEqualTo(6);
         assertThat(event.getSubmittedBy()).isEqualTo("中心实验室");
-        assertThat(assayEventRepository.findBySampleIdAndItemCode(
+        assertThat(assayEventRepository.findTopBySampleIdAndItemCodeOrderByVersionNoDesc(
                 sampleId("AS-01"), "AU_GRADE")).isPresent();
     }
 
@@ -72,15 +75,16 @@ class AssayServiceTest {
     }
 
     @Test
-    void oneValidResultPerItemAndResultCannotBeOverwritten() {
+    void cannotResubmitWhilePendingAndEffectiveResultCannotBeOverwritten() {
         handToLab("AS-03", "EV-AS-03", "中心实验室");
         assayService.submit(
                 "EV-AS-03", "AS-03", "AU_GRADE", new BigDecimal("2.35"), "g/t", "中心实验室");
 
+        // 待复核期间重复提交被拒绝
         assertThatThrownBy(() -> assayService.submit(
-                "EV-AS-03-2", "AS-03", "AU_GRADE", new BigDecimal("9.99"), "g/t", "中心实验室"))
+                "EV-AS-03-P", "AS-03", "AU_GRADE", new BigDecimal("9.99"), "g/t", "中心实验室"))
                 .isInstanceOf(ConflictException.class)
-                .hasMessageContaining("已有有效结果");
+                .hasMessageContaining("待复核");
 
         AssayEvent persisted = assayEventRepository.findAll().getFirst();
         assertThat(persisted.getResultValue()).isEqualByComparingTo("2.350000");
@@ -94,9 +98,9 @@ class AssayServiceTest {
         assayService.submit(
                 "EV-AS-04-B", "AS-04", "CU_GRADE", new BigDecimal("0.12"), "%", "中心实验室");
 
-        assertThat(assayEventRepository.findBySampleIdAndItemCode(
+        assertThat(assayEventRepository.findTopBySampleIdAndItemCodeOrderByVersionNoDesc(
                 sampleId("AS-04"), "AU_GRADE")).isPresent();
-        assertThat(assayEventRepository.findBySampleIdAndItemCode(
+        assertThat(assayEventRepository.findTopBySampleIdAndItemCodeOrderByVersionNoDesc(
                 sampleId("AS-04"), "CU_GRADE")).isPresent();
     }
 
@@ -126,5 +130,16 @@ class AssayServiceTest {
                 "EV-AS-06-X", "AS-06", "AU_GRADE", new BigDecimal("1.0"), "g/t", "中心实验室"))
                 .isInstanceOf(BusinessRuleException.class)
                 .hasMessageContaining("已分样");
+    }
+
+    @Test
+    void cannotSubmitWhileCustodyPending() {
+        receptionService.receive("AS-07", "矿区", new BigDecimal("40.0000"), "地勘院");
+        custodyService.initiate("EV-AS-07-I", "AS-07", "地勘院", "中心实验室");
+
+        assertThatThrownBy(() -> assayService.submit(
+                "EV-AS-07", "AS-07", "AU_GRADE", new BigDecimal("1.0"), "g/t", "地勘院"))
+                .isInstanceOf(BusinessRuleException.class)
+                .hasMessageContaining("保管链不完整");
     }
 }

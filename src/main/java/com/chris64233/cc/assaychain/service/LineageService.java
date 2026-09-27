@@ -1,11 +1,15 @@
 package com.chris64233.cc.assaychain.service;
 
 import com.chris64233.cc.assaychain.domain.AssayEvent;
+import com.chris64233.cc.assaychain.domain.CorrectionRequest;
 import com.chris64233.cc.assaychain.domain.CustodyEvent;
+import com.chris64233.cc.assaychain.domain.ReviewEvent;
 import com.chris64233.cc.assaychain.domain.Sample;
 import com.chris64233.cc.assaychain.domain.SplitEvent;
 import com.chris64233.cc.assaychain.repo.AssayEventRepository;
+import com.chris64233.cc.assaychain.repo.CorrectionRequestRepository;
 import com.chris64233.cc.assaychain.repo.CustodyEventRepository;
+import com.chris64233.cc.assaychain.repo.ReviewEventRepository;
 import com.chris64233.cc.assaychain.repo.SampleRepository;
 import com.chris64233.cc.assaychain.repo.SplitEventRepository;
 import org.springframework.stereotype.Service;
@@ -24,15 +28,21 @@ public class LineageService {
     private final SplitEventRepository splitEventRepository;
     private final CustodyEventRepository custodyEventRepository;
     private final AssayEventRepository assayEventRepository;
+    private final ReviewEventRepository reviewEventRepository;
+    private final CorrectionRequestRepository correctionRequestRepository;
 
     public LineageService(SampleRepository sampleRepository,
                           SplitEventRepository splitEventRepository,
                           CustodyEventRepository custodyEventRepository,
-                          AssayEventRepository assayEventRepository) {
+                          AssayEventRepository assayEventRepository,
+                          ReviewEventRepository reviewEventRepository,
+                          CorrectionRequestRepository correctionRequestRepository) {
         this.sampleRepository = sampleRepository;
         this.splitEventRepository = splitEventRepository;
         this.custodyEventRepository = custodyEventRepository;
         this.assayEventRepository = assayEventRepository;
+        this.reviewEventRepository = reviewEventRepository;
+        this.correctionRequestRepository = correctionRequestRepository;
     }
 
     @Transactional(readOnly = true)
@@ -129,14 +139,57 @@ public class LineageService {
 
         for (AssayEvent event :
                 assayEventRepository.findBySampleIdInOrderByEventTimeAsc(sampleIds)) {
+            String statusText = switch (event.getStatus()) {
+                case PENDING -> "待复核";
+                case EFFECTIVE -> "生效中(v" + event.getVersionNo() + ")";
+                case REJECTED -> "已驳回";
+                case SUPERSEDED -> "已被v" + (event.getVersionNo() + 1) + "取代";
+            };
             timeline.add(new TimelineEntry(
                     "ASSAY",
                     event.getEventNo(),
                     event.getSample().getExternalNo(),
-                    "检测项目 " + event.getItemCode() + " = "
+                    "检测项目 " + event.getItemCode() + " v" + event.getVersionNo() + " = "
                             + event.getResultValue().toPlainString() + " " + event.getUnit()
-                            + "，提交方 " + event.getSubmittedBy(),
+                            + "，提交方 " + event.getSubmittedBy() + "，状态 " + statusText,
                     event.getEventTime()));
+        }
+
+        for (CorrectionRequest correction :
+                correctionRequestRepository.findBySampleIdInOrderByRequestedAtAsc(sampleIds)) {
+            AssayEvent original = correction.getOriginalVersion();
+            timeline.add(new TimelineEntry(
+                    "CORRECTION",
+                    correction.getCorrectionNo(),
+                    original.getSample().getExternalNo(),
+                    "更正申请[" + correction.getStatus() + "] 项目 " + original.getItemCode()
+                            + "（原结果号 " + original.getEventNo() + "）："
+                            + correction.getOldValue().toPlainString() + " "
+                            + correction.getOldUnit() + " -> "
+                            + correction.getNewValue().toPlainString() + " " + correction.getNewUnit()
+                            + "，原因 " + correction.getReason() + "，证据 " + correction.getEvidence()
+                            + "，申请人 " + correction.getRequestedBy(),
+                    correction.getRequestedAt()));
+        }
+
+        for (ReviewEvent review :
+                reviewEventRepository.findBySampleIdInOrderByReviewedAtAsc(sampleIds)) {
+            boolean resultReview = review.getKind() == com.chris64233.cc.assaychain.domain.ReviewKind.RESULT_REVIEW;
+            String decisionText = review.getDecision() == com.chris64233.cc.assaychain.domain.ReviewDecision.APPROVED
+                    ? "通过"
+                    : "驳回";
+            String refNote = review.getCorrectionRequest() == null
+                    ? ""
+                    : "，更正号 " + review.getCorrectionRequest().getCorrectionNo();
+            timeline.add(new TimelineEntry(
+                    resultReview ? "RESULT_REVIEW" : "CORRECTION_REVIEW",
+                    review.getEventNo(),
+                    review.getResultVersion().getSample().getExternalNo(),
+                    (resultReview ? "结果复核" : "更正审批") + decisionText
+                            + "，结果号 " + review.getResultVersion().getEventNo()
+                            + refNote + "，审批人 " + review.getReviewedBy()
+                            + (review.getComment() == null ? "" : "，意见 " + review.getComment()),
+                    review.getReviewedAt()));
         }
 
         timeline.sort(Comparator.comparing(TimelineEntry::eventTime)

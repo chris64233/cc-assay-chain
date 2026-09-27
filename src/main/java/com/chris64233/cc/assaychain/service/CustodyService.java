@@ -37,7 +37,8 @@ public class CustodyService {
         }
 
         CustodyEvent existing = custodyEventRepository.findByEventNo(eventNo).orElse(null);
-        Sample sample = sampleRepository.findByExternalNo(sampleExternalNo)
+        // 悲观锁锁定样本行，与结果提交/复核/更正/分样串行
+        Sample sample = sampleRepository.findByExternalNoForUpdate(sampleExternalNo)
                 .orElseThrow(() -> new NotFoundException("样本不存在: " + sampleExternalNo));
 
         if (existing != null) {
@@ -92,7 +93,9 @@ public class CustodyService {
                     "只有指定接收实验室可以确认交接，指定接收方为: " + event.getToLab());
         }
 
-        Sample sample = event.getSample();
+        Sample sample = sampleRepository.findByIdForUpdate(event.getSample().getId())
+                .orElseThrow(() -> new NotFoundException(
+                        "样本不存在: " + event.getSample().getExternalNo()));
         if (!sample.isLeaf()) {
             throw new BusinessRuleException("样本已分样，不能确认交接: " + sample.getExternalNo());
         }
