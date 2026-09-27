@@ -1,6 +1,7 @@
 package com.chris64233.cc.assaychain.service;
 
 import com.chris64233.cc.assaychain.domain.AssayEvent;
+import com.chris64233.cc.assaychain.domain.AssayStatus;
 import com.chris64233.cc.assaychain.domain.Sample;
 import com.chris64233.cc.assaychain.repo.AssayEventRepository;
 import com.chris64233.cc.assaychain.repo.SampleRepository;
@@ -21,7 +22,12 @@ public class AssayService {
         this.sampleRepository = sampleRepository;
     }
 
-    /** 提交检测结果。只有当前持有该叶子样本的实验室可提交，结果事件不可覆盖。 */
+    /**
+     * 提交检测结果。只有当前持有该叶子样本的实验室可提交；
+     * 结果进入待复核状态，复核通过后才对外有效。
+     * 对样本行加悲观写锁，与分样/保管方变更互斥，保证不会对已不再是
+     * 叶子节点的样本发布结果。
+     */
     @Transactional
     public AssayEvent submit(String eventNo,
                              String sampleExternalNo,
@@ -37,7 +43,7 @@ public class AssayService {
         BigDecimal normalizedValue = MassRules.requireResultScale(resultValue);
 
         AssayEvent existingByNo = assayEventRepository.findByEventNo(eventNo).orElse(null);
-        Sample sample = sampleRepository.findByExternalNo(sampleExternalNo)
+        Sample sample = sampleRepository.findLockedByExternalNo(sampleExternalNo)
                 .orElseThrow(() -> new NotFoundException("样本不存在: " + sampleExternalNo));
 
         if (existingByNo != null) {
@@ -53,12 +59,20 @@ public class AssayService {
                     "只有当前持有样本的实验室可以提交结果，当前持有方为: " + sample.getCustodian());
         }
 
-        AssayEvent existingItem = assayEventRepository
-                .findBySampleIdAndItemCode(sample.getId(), itemCode)
+        AssayEvent openItem = assayEventRepository
+                .findBySampleIdAndItemCodeOrderByVersionNoAsc(sample.getId(), itemCode)
+                .stream()
+                .filter(event -> event.getStatus() == AssayStatus.EFFECTIVE
+                        || event.getStatus() == AssayStatus.PENDING_REVIEW)
+                .reduce((first, second) -> second)
                 .orElse(null);
-        if (existingItem != null) {
-            throw new ConflictException("检测项目已有有效结果，不可覆盖: " + itemCode
-                    + "（事件号 " + existingItem.getEventNo() + "）");
+        if (openItem != null) {
+            if (openItem.getStatus() == AssayStatus.EFFECTIVE) {
+                throw new ConflictException("检测项目已有生效结果，不得直接覆盖，请发起更正申请: "
+                        + itemCode + "（结果号 " + openItem.getEventNo() + "）");
+            }
+            throw new ConflictException("检测项目已有待复核结果，请等待复核结论: " + itemCode
+                    + "（结果号 " + openItem.getEventNo() + "）");
         }
 
         AssayEvent event = new AssayEvent();
@@ -68,6 +82,8 @@ public class AssayService {
         event.setResultValue(normalizedValue);
         event.setUnit(unit);
         event.setSubmittedBy(submittedBy);
+        event.setStatus(AssayStatus.PENDING_REVIEW);
+        event.setVersionNo(1);
         return assayEventRepository.save(event);
     }
 

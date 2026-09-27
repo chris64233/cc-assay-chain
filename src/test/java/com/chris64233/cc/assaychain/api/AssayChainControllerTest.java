@@ -97,7 +97,33 @@ class AssayChainControllerTest {
                                 {"eventNo":"WEB-R1","sampleExternalNo":"WEB-1-A","itemCode":"AU_GRADE",
                                  "resultValue":3.25,"unit":"g/t","submittedBy":"中心实验室"}
                                 """))
-                .andExpect(status().isCreated());
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.status").value("PENDING_REVIEW"))
+                .andExpect(jsonPath("$.versionNo").value(1));
+
+        // 复核人不能与提交人相同
+        mockMvc.perform(post("/api/assays/reviews")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"approvalNo":"WEB-RV1","resultEventNo":"WEB-R1",
+                                 "decision":"APPROVE","decidedBy":"中心实验室"}
+                                """))
+                .andExpect(status().isBadRequest());
+
+        mockMvc.perform(post("/api/assays/reviews")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"approvalNo":"WEB-RV1","resultEventNo":"WEB-R1",
+                                 "decision":"APPROVE","decidedBy":"质量负责人"}
+                                """))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.kind").value("SUBMISSION_REVIEW"))
+                .andExpect(jsonPath("$.decision").value("APPROVE"));
+
+        mockMvc.perform(get("/api/samples/WEB-1-A/results/AU_GRADE/effective"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("EFFECTIVE"))
+                .andExpect(jsonPath("$.eventNo").value("WEB-R1"));
 
         mockMvc.perform(post("/api/assays")
                         .contentType(MediaType.APPLICATION_JSON)
@@ -107,11 +133,69 @@ class AssayChainControllerTest {
                                 """))
                 .andExpect(status().isConflict());
 
+        // 生效结果只能通过更正申请修改
+        mockMvc.perform(post("/api/corrections")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"correctionNo":"WEB-C1","resultEventNo":"WEB-R1","newValue":3.30,
+                                 "newUnit":"g/t","reason":"仪器标定错误",
+                                 "evidence":"复检报告 LAB-2026-WEB1","requestedBy":"中心实验室"}
+                                """))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.status").value("PENDING"))
+                .andExpect(jsonPath("$.oldValue").value(3.250000));
+
+        // 同号异内容冲突
+        mockMvc.perform(post("/api/corrections")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"correctionNo":"WEB-C1","resultEventNo":"WEB-R1","newValue":9.99,
+                                 "newUnit":"g/t","reason":"仪器标定错误",
+                                 "evidence":"复检报告 LAB-2026-WEB1","requestedBy":"中心实验室"}
+                                """))
+                .andExpect(status().isConflict());
+
+        // 审批人必须与申请人不同
+        mockMvc.perform(post("/api/corrections/decisions")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"approvalNo":"WEB-CA1","correctionNo":"WEB-C1",
+                                 "decision":"APPROVE","decidedBy":"中心实验室"}
+                                """))
+                .andExpect(status().isBadRequest());
+
+        mockMvc.perform(post("/api/corrections/decisions")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"approvalNo":"WEB-CA1","correctionNo":"WEB-C1",
+                                 "decision":"APPROVE","decidedBy":"技术负责人"}
+                                """))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.newEventNo").value("COR-WEB-C1"));
+
+        mockMvc.perform(get("/api/samples/WEB-1-A/results/AU_GRADE/effective"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.eventNo").value("COR-WEB-C1"))
+                .andExpect(jsonPath("$.versionNo").value(2));
+
+        mockMvc.perform(get("/api/samples/WEB-1-A/results/AU_GRADE"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.versions.length()").value(2))
+                .andExpect(jsonPath("$.versions[0].status").value("SUPERSEDED"))
+                .andExpect(jsonPath("$.versions[1].sourceCorrectionNo").value("WEB-C1"))
+                .andExpect(jsonPath("$.reviews.length()").value(2))
+                .andExpect(jsonPath("$.effectiveEventNoAsOf").doesNotExist());
+
+        mockMvc.perform(get("/api/samples/WEB-1-A/results"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.lineage.origin.externalNo").value("WEB-1-A"))
+                .andExpect(jsonPath("$.results.length()").value(1));
+
         mockMvc.perform(get("/api/samples/WEB-1/lineage"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.origin.externalNo").value("WEB-1"))
                 .andExpect(jsonPath("$.descendants.length()").value(2))
-                .andExpect(jsonPath("$.timeline.length()").value(7));
+                .andExpect(jsonPath("$.timeline.length()").value(11));
 
         mockMvc.perform(get("/api/samples/NO-SUCH"))
                 .andExpect(status().isNotFound());

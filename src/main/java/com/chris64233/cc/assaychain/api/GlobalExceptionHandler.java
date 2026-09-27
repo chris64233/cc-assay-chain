@@ -37,6 +37,12 @@ public class GlobalExceptionHandler {
         return build(HttpStatus.CONFLICT, "样本状态已被其他事务改变，请重试");
     }
 
+    @ExceptionHandler(org.springframework.dao.PessimisticLockingFailureException.class)
+    public ResponseEntity<Map<String, Object>> handlePessimisticLock(
+            org.springframework.dao.PessimisticLockingFailureException ex) {
+        return build(HttpStatus.CONFLICT, "样本正被其他事务处理（锁竞争），请重试");
+    }
+
     @ExceptionHandler(DataIntegrityViolationException.class)
     public ResponseEntity<Map<String, Object>> handleDataIntegrity(
             DataIntegrityViolationException ex) {

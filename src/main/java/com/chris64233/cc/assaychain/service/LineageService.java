@@ -1,9 +1,14 @@
 package com.chris64233.cc.assaychain.service;
 
+import com.chris64233.cc.assaychain.domain.ApprovalEvent;
+import com.chris64233.cc.assaychain.domain.ApprovalKind;
+import com.chris64233.cc.assaychain.domain.AssayCorrection;
 import com.chris64233.cc.assaychain.domain.AssayEvent;
 import com.chris64233.cc.assaychain.domain.CustodyEvent;
 import com.chris64233.cc.assaychain.domain.Sample;
 import com.chris64233.cc.assaychain.domain.SplitEvent;
+import com.chris64233.cc.assaychain.repo.ApprovalEventRepository;
+import com.chris64233.cc.assaychain.repo.AssayCorrectionRepository;
 import com.chris64233.cc.assaychain.repo.AssayEventRepository;
 import com.chris64233.cc.assaychain.repo.CustodyEventRepository;
 import com.chris64233.cc.assaychain.repo.SampleRepository;
@@ -24,15 +29,21 @@ public class LineageService {
     private final SplitEventRepository splitEventRepository;
     private final CustodyEventRepository custodyEventRepository;
     private final AssayEventRepository assayEventRepository;
+    private final AssayCorrectionRepository correctionRepository;
+    private final ApprovalEventRepository approvalEventRepository;
 
     public LineageService(SampleRepository sampleRepository,
                           SplitEventRepository splitEventRepository,
                           CustodyEventRepository custodyEventRepository,
-                          AssayEventRepository assayEventRepository) {
+                          AssayEventRepository assayEventRepository,
+                          AssayCorrectionRepository correctionRepository,
+                          ApprovalEventRepository approvalEventRepository) {
         this.sampleRepository = sampleRepository;
         this.splitEventRepository = splitEventRepository;
         this.custodyEventRepository = custodyEventRepository;
         this.assayEventRepository = assayEventRepository;
+        this.correctionRepository = correctionRepository;
+        this.approvalEventRepository = approvalEventRepository;
     }
 
     @Transactional(readOnly = true)
@@ -135,8 +146,40 @@ public class LineageService {
                     event.getSample().getExternalNo(),
                     "检测项目 " + event.getItemCode() + " = "
                             + event.getResultValue().toPlainString() + " " + event.getUnit()
-                            + "，提交方 " + event.getSubmittedBy(),
+                            + "，提交方 " + event.getSubmittedBy()
+                            + "，版本 v" + event.getVersionNo()
+                            + "，状态 " + event.getStatus(),
                     event.getEventTime()));
+        }
+
+        for (AssayCorrection correction : correctionRepository
+                .findByAssayEventSampleIdInOrderByCreatedAtAsc(sampleIds)) {
+            timeline.add(new TimelineEntry(
+                    "CORRECTION",
+                    correction.getCorrectionNo(),
+                    correction.getAssayEvent().getSample().getExternalNo(),
+                    "更正申请：原结果 " + correction.getAssayEvent().getEventNo()
+                            + " " + correction.getOldValue().toPlainString() + correction.getOldUnit()
+                            + " -> " + correction.getNewValue().toPlainString()
+                            + correction.getNewUnit()
+                            + "，申请人 " + correction.getRequestedBy()
+                            + "，状态 " + correction.getStatus(),
+                    correction.getCreatedAt()));
+        }
+
+        for (ApprovalEvent approval : approvalEventRepository
+                .findByAssayEventSampleIdInOrderByDecisionTimeAsc(sampleIds)) {
+            boolean correctionDecision = approval.getKind() == ApprovalKind.CORRECTION_DECISION;
+            timeline.add(new TimelineEntry(
+                    correctionDecision ? "CORRECTION_DECISION" : "ASSAY_REVIEW",
+                    approval.getApprovalNo(),
+                    approval.getAssayEvent().getSample().getExternalNo(),
+                    (correctionDecision ? "更正审批 " : "结果复核 ")
+                            + approval.getDecision() + "，决定人 " + approval.getDecidedBy()
+                            + (approval.getNewEventNo() == null
+                                    ? ""
+                                    : "，生成新版本 " + approval.getNewEventNo()),
+                    approval.getDecisionTime()));
         }
 
         timeline.sort(Comparator.comparing(TimelineEntry::eventTime)

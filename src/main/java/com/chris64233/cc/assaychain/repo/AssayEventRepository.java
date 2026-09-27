@@ -10,7 +10,11 @@ public interface AssayEventRepository extends JpaRepository<AssayEvent, Long> {
 
     Optional<AssayEvent> findByEventNo(String eventNo);
 
-    Optional<AssayEvent> findBySampleIdAndItemCode(Long sampleId, String itemCode);
+    /** 版本链：同一（样本，检测项目）的全部版本，按版本号升序。 */
+    List<AssayEvent> findBySampleIdAndItemCodeOrderByVersionNoAsc(Long sampleId, String itemCode);
+
+    Optional<AssayEvent> findBySampleIdAndItemCodeAndVersionNo(
+            Long sampleId, String itemCode, int versionNo);
 
     List<AssayEvent> findBySampleIdInOrderByEventTimeAsc(List<Long> sampleIds);
 }
